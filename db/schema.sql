@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   employee_id INTEGER NOT NULL REFERENCES employees(id),
   date DATE NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('permiso', 'falta')),
-  reason TEXT NOT NULL CHECK (reason IN ('enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro')),
+  reason TEXT NOT NULL CHECK (reason IN ('enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro', 'vacaciones')),
   note TEXT,
   voucher_url TEXT
 );
@@ -83,3 +83,9 @@ CREATE INDEX IF NOT EXISTS idx_vacations_employee ON vacations(employee_id);
 CREATE INDEX IF NOT EXISTS idx_incidents_employee_date ON incidents(employee_id, date);
 CREATE INDEX IF NOT EXISTS idx_overtime_employee_date ON overtime(employee_id, date);
 CREATE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
+
+-- Migración nov 2026: motivo 'vacaciones' en permisos y faltas. La base ya
+-- creada no cambia con CREATE TABLE IF NOT EXISTS, así que se actualiza la
+-- restricción aquí (idempotente: se ejecuta en cada arranque).
+ALTER TABLE incidents DROP CONSTRAINT IF EXISTS incidents_reason_check;
+ALTER TABLE incidents ADD CONSTRAINT incidents_reason_check CHECK (reason IN ('enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro', 'vacaciones'));
