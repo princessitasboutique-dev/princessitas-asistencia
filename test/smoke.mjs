@@ -100,6 +100,30 @@ async function main() {
     r = await req('/api/admin/vacations', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { employeeId: isela.id, start_date: '2026-11-23', end_date: '2026-11-27', status: 'approved' } });
     check('POST /api/admin/vacations Isela lun-vie -> days_count 4 (sin su lunes de descanso)', r.status === 201 && r.json?.vacation?.days_count === 4, JSON.stringify(r.json));
 
+    // 9b. Incidente con motivo Vacaciones: se registra como permiso y
+    // descuenta un día del saldo (sin duplicar si se registra dos veces).
+    // Isela descansa los lunes; 2026-11-18 es miércoles laborable y no está
+    // cubierto por su vacación del 23–27.
+    r = await req('/api/admin/incidents', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { employeeId: isela.id, date: '2026-11-18', type: 'falta', reason: 'vacaciones' } });
+    check('POST /api/admin/incidents vacaciones -> 201 y tipo forzado a permiso', r.status === 201 && r.json?.incident?.type === 'permiso' && r.json?.incident?.reason === 'vacaciones', JSON.stringify(r.json));
+    const vacIncidentId = r.json?.incident?.id;
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    const iselaState = (r.json?.employees || []).find((e) => e.name === 'Isela Martínez');
+    check('Saldo Isela tras día de vacaciones -> used 5 (4 + 1)', iselaState?.vacation?.used === 5, JSON.stringify(iselaState?.vacation));
+    r = await req('/api/admin/incidents', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { employeeId: isela.id, date: '2026-11-18', type: 'permiso', reason: 'vacaciones' } });
+    check('Segundo registro mismo día -> 201 pero sin descontar de nuevo', r.status === 201, JSON.stringify(r.json));
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    const iselaState2 = (r.json?.employees || []).find((e) => e.name === 'Isela Martínez');
+    check('Saldo Isela sigue en used 5 tras duplicado', iselaState2?.vacation?.used === 5, JSON.stringify(iselaState2?.vacation));
+    r = await req('/api/admin/report?month=2026-11', { headers: { 'x-admin-pin': PIN } });
+    const iselaReport = (r.json?.employees || []).find((e) => e.name === 'Isela Martínez');
+    check('Reporte nov Isela -> vacationDays 5 y permisos 2', iselaReport?.vacationDays === 5 && iselaReport?.permisos === 2, JSON.stringify(iselaReport));
+    r = await req(`/api/admin/incidents/${vacIncidentId}`, { method: 'DELETE', headers: { 'x-admin-pin': PIN } });
+    check('DELETE incidente vacaciones -> 200', r.status === 200, JSON.stringify(r.json));
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    const iselaState3 = (r.json?.employees || []).find((e) => e.name === 'Isela Martínez');
+    check('Saldo Isela vuelve a used 4 al eliminar el registro', iselaState3?.vacation?.used === 4, JSON.stringify(iselaState3?.vacation));
+
     // 10. Reporte mensual
     const month = new Date().toISOString().slice(0, 7);
     r = await req(`/api/admin/report?month=${month}`, { headers: { 'x-admin-pin': PIN } });
