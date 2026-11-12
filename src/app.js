@@ -304,10 +304,15 @@ function createApp(pool) {
     try {
       const pin = String((req.body && req.body.pin) || '');
       const hash = await getPinHash();
-      if (!hash) return res.json({ ok: false, pinSet: false });
-      if (!pin) return res.json({ ok: false, pinSet: true });
-      const ok = await bcrypt.compare(pin, hash);
-      return res.json({ ok, pinSet: true });
+      // Se responde siempre ok:true con HTTP 200: el cliente (api.js) lanza
+      // "Error <status>" cuando data.ok es false, y este endpoint usa
+      // pinSet/verified como resultado, no como error. Antes devolvía
+      // ok:false con 200 y el primer uso mostraba "Error 200" sin poder
+      // crear el PIN.
+      if (!hash) return res.json({ ok: true, pinSet: false, verified: false });
+      if (!pin) return res.json({ ok: true, pinSet: true, verified: false });
+      const verified = await bcrypt.compare(pin, hash);
+      return res.json({ ok: true, pinSet: true, verified });
     } catch (err) { next(err); }
   });
 
