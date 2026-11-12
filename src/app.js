@@ -536,20 +536,56 @@ function createApp(pool) {
       const employee = await getEmployee(parseInt(b.employeeId || b.employee_id, 10));
       if (!employee) return res.status(404).json({ ok: false, error: 'Empleada no encontrada.' });
       if (!['permiso', 'falta'].includes(b.type)) return res.status(400).json({ ok: false, error: 'type debe ser permiso o falta.' });
-      const reasons = ['enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro'];
+      const reasons = ['enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro', 'vacaciones'];
       if (!reasons.includes(b.reason)) return res.status(400).json({ ok: false, error: 'reason no válido.' });
+      // Un día de vacaciones es una ausencia autorizada: siempre es permiso.
+      const type = b.reason === 'vacaciones' ? 'permiso' : b.type;
+      const date = toISODate(b.date);
       const r = await pool.query(
         `INSERT INTO incidents (employee_id, date, type, reason, note, voucher_url)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [employee.id, toISODate(b.date), b.type, b.reason, b.note || null, b.voucher_url || b.voucherUrl || null]
+        [employee.id, date, type, b.reason, b.note || null, b.voucher_url || b.voucherUrl || null]
       );
-      return res.status(201).json({ ok: true, incident: normIncident(r.rows[0]) });
+      let vacation = null;
+      if (b.reason === 'vacaciones') {
+        // El día también se descuenta del saldo de vacaciones: se registra
+        // como vacación aprobada de un día, salvo que ya exista una vacación
+        // aprobada/tomada que cubra esa fecha (para no descontar dos veces).
+        const existing = await pool.query(
+          `SELECT id FROM vacations WHERE employee_id = $1
+           AND status IN ('approved','taken') AND start_date <= $2 AND end_date >= $2`,
+          [employee.id, date]
+        );
+        if (existing.rows.length === 0) {
+          const holidays = await getHolidaysSet();
+          const days = countWorkingDays(date, date, employee.rest_day, holidays);
+          const vr = await pool.query(
+            `INSERT INTO vacations (employee_id, start_date, end_date, status, note, days_count)
+             VALUES ($1,$2,$3,'approved',$4,$5) RETURNING *`,
+            [employee.id, date, date, 'Registrado desde Permisos y faltas', days]
+          );
+          vacation = normVacation(vr.rows[0]);
+        }
+      }
+      return res.status(201).json({ ok: true, incident: normIncident(r.rows[0]), vacation });
     } catch (err) { next(err); }
   });
 
   app.delete('/api/admin/incidents/:id', requireAdmin, async (req, res, next) => {
     try {
-      await pool.query('DELETE FROM incidents WHERE id = $1', [parseInt(req.params.id, 10)]);
+      const id = parseInt(req.params.id, 10);
+      const cur = await pool.query('SELECT * FROM incidents WHERE id = $1', [id]);
+      const inc = cur.rows[0];
+      if (inc && inc.reason === 'vacaciones') {
+        // Borra también la vacación de un día que se creó automáticamente
+        // con este registro (solo la marcada como registrada desde aquí).
+        await pool.query(
+          `DELETE FROM vacations WHERE employee_id = $1 AND start_date = $2 AND end_date = $2
+           AND status = 'approved' AND note = 'Registrado desde Permisos y faltas'`,
+          [inc.employee_id, toISODate(inc.date)]
+        );
+      }
+      await pool.query('DELETE FROM incidents WHERE id = $1', [id]);
       return res.json({ ok: true });
     } catch (err) { next(err); }
   });
