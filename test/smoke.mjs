@@ -71,13 +71,15 @@ async function main() {
     r = await req('/api/checkout', { method: 'POST', body: { employeeId: empId } });
     check('POST /api/checkout -> registra salida', r.status === 200 && !!r.json?.record?.check_out, JSON.stringify(r.json));
 
-    // 6. PIN: crear y verificar
+    // 6. PIN: verificar que aún no hay PIN, crear y verificar
+    r = await req('/api/admin/verify-pin', { method: 'POST', body: { pin: PIN } });
+    check('POST /api/admin/verify-pin sin PIN -> pinSet:false (sin "Error 200")', r.status === 200 && r.json?.pinSet === false, JSON.stringify(r.json));
     r = await req('/api/admin/pin', { method: 'POST', body: { pin: PIN } });
     check('POST /api/admin/pin (primer uso) -> creado', r.status === 200 && r.json?.created === true, JSON.stringify(r.json));
     r = await req('/api/admin/verify-pin', { method: 'POST', body: { pin: PIN } });
-    check('POST /api/admin/verify-pin correcto -> ok:true', r.json?.ok === true, JSON.stringify(r.json));
+    check('POST /api/admin/verify-pin correcto -> verified:true', r.json?.ok === true && r.json?.verified === true, JSON.stringify(r.json));
     r = await req('/api/admin/verify-pin', { method: 'POST', body: { pin: '9999' } });
-    check('POST /api/admin/verify-pin incorrecto -> ok:false', r.json?.ok === false, JSON.stringify(r.json));
+    check('POST /api/admin/verify-pin incorrecto -> verified:false', r.json?.ok === true && r.json?.verified === false, JSON.stringify(r.json));
 
     // 7. Zona admin protegida
     r = await req('/api/admin/state');
