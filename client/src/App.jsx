@@ -121,7 +121,7 @@ function Admin({ onBack }) {
       } else {
         const r = await api('/api/admin/verify-pin', { method: 'POST', body: { pin: pinInput } });
         if (r.pinSet === false) { setPinSet(false); setMsg({ kind: 'info', text: 'Aún no hay PIN. Crea uno para entrar a Administración.' }); return; }
-        if (!r.ok) { setMsg({ kind: 'err', text: 'PIN incorrecto.' }); return; }
+        if (r.verified === false) { setMsg({ kind: 'err', text: 'PIN incorrecto.' }); return; }
         setPin(pinInput);
         setAuthed(true);
       }
