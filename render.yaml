@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: princessitas-app
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # DATABASE_URL se configura en el dashboard de Render (Environment):
+      # cadena de conexión (pool) de Neon, con sslmode=require.
+      # No se pone ningún valor real en este archivo.
+      - key: DATABASE_URL
+        sync: false
