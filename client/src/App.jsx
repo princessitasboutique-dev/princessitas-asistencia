@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, getPin, setPin } from './api.js';
 
 const REST_DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
-const INCIDENT_REASONS = ['enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro'];
+const INCIDENT_REASONS = ['enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro', 'vacaciones'];
 
 function fmtTime(t) { return t ? String(t).slice(0, 5) : ''; }
 function todayISO() { return new Date().toISOString().slice(0, 10); }
@@ -382,13 +382,14 @@ function IncidentesTab({ state, refresh }) {
               <option value="falta">Falta</option><option value="permiso">Permiso</option>
             </select></div>
           <div><label>Motivo</label>
-            <select value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
+            <select value={form.reason} onChange={(e) => { const reason = e.target.value; setForm({ ...form, reason, type: reason === 'vacaciones' ? 'permiso' : form.type }); }}>
               {INCIDENT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
             </select></div>
         </div>
         <label>Nota / justificante</label>
         <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Motivo, folio IMSS, etc." />
         <button>Guardar</button>
+        <p className="muted">Si el motivo es Vacaciones, el día también se descuenta del saldo de vacaciones de la empleada.</p>
       </form>
       <table>
         <thead><tr><th>Fecha</th><th>Empleada</th><th>Tipo</th><th>Motivo</th><th>Nota</th><th></th></tr></thead>
