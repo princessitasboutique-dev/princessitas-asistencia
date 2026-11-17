@@ -130,6 +130,47 @@ async function main() {
     check(`GET /api/admin/report?month=${month} -> 5 empleadas`, r.status === 200 && r.json?.employees?.length === 5, JSON.stringify(r.json)?.slice(0, 200));
     r = await req(`/api/admin/report-text?month=${month}`, { headers: { 'x-admin-pin': PIN } });
     check('GET /api/admin/report-text -> texto con el nombre de la tienda', r.status === 200 && r.text.includes('Princessitas'), r.text.slice(0, 120));
+
+    // 11. Préstamos: crear, abonar, validar tope, liquidar y borrar abono.
+    const carolina = (await req('/api/board')).json.employees.find((e) => e.name === 'Carolina Parra');
+    r = await req('/api/admin/loans', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { employeeId: carolina.id, date: '2026-11-16', amount: 1000, note: 'Préstamo de prueba' } });
+    check('POST /api/admin/loans $1,000 -> 201', r.status === 201 && r.json?.loan?.amount === 1000, JSON.stringify(r.json));
+    const loanId = r.json?.loan?.id;
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    let loan = (r.json?.loans || []).find((l) => l.id === loanId);
+    check('State: préstamo nuevo -> total_paid 0, balance 1000, activo', loan?.total_paid === 0 && loan?.balance === 1000 && loan?.status === 'activo', JSON.stringify(loan));
+
+    r = await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { date: '2026-11-16', amount: 400 } });
+    check('POST abono $400 -> 201', r.status === 201 && r.json?.payment?.amount === 400, JSON.stringify(r.json));
+    const paymentId = r.json?.payment?.id;
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    loan = (r.json?.loans || []).find((l) => l.id === loanId);
+    check('State tras abono $400 -> total_paid 400, balance 600, activo', loan?.total_paid === 400 && loan?.balance === 600 && loan?.status === 'activo', JSON.stringify(loan));
+
+    r = await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { date: '2026-11-16', amount: 700 } });
+    check('Abono $700 sobre saldo $600 -> 400 con mensaje de saldo pendiente', r.status === 400 && /supera el saldo pendiente/.test(r.json?.error || ''), JSON.stringify(r.json));
+
+    r = await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { date: '2026-11-16', amount: 600 } });
+    check('POST abono $600 -> 201 (liquida)', r.status === 201, JSON.stringify(r.json));
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    loan = (r.json?.loans || []).find((l) => l.id === loanId);
+    check('State tras liquidar -> total_paid 1000, balance 0, liquidado', loan?.total_paid === 1000 && loan?.balance === 0 && loan?.status === 'liquidado', JSON.stringify(loan));
+
+    r = await req('/api/board');
+    check('GET /api/board NO expone loans ni loanPayments', !('loans' in (r.json || {})) && !('loanPayments' in (r.json || {})), Object.keys(r.json || {}).join(','));
+
+    r = await req(`/api/admin/loan-payments/${paymentId}`, { method: 'DELETE', headers: { 'x-admin-pin': PIN } });
+    check('DELETE abono $400 -> 200', r.status === 200, JSON.stringify(r.json));
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    loan = (r.json?.loans || []).find((l) => l.id === loanId);
+    check('State tras borrar abono $400 -> total_paid 600, balance 400, activo', loan?.total_paid === 600 && loan?.balance === 400 && loan?.status === 'activo', JSON.stringify(loan));
+
+    r = await req('/api/admin/loans', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { employeeId: carolina.id, date: '2026-11-16', amount: 0 } });
+    check('POST préstamo $0 -> 400', r.status === 400, JSON.stringify(r.json));
+    r = await req(`/api/admin/loans/${loanId}`, { method: 'DELETE', headers: { 'x-admin-pin': PIN } });
+    check('DELETE préstamo -> 200', r.status === 200, JSON.stringify(r.json));
+    r = await req('/api/admin/state', { headers: { 'x-admin-pin': PIN } });
+    check('State tras borrar préstamo -> ya no aparece (ni sus abonos)', !(r.json?.loans || []).some((l) => l.id === loanId) && !(r.json?.loanPayments || []).some((p) => p.loan_id === loanId), JSON.stringify(r.json?.loans));
   } finally {
     server.close();
     await pool.end().catch(() => {});
