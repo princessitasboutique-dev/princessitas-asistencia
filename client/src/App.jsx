@@ -5,6 +5,9 @@ const REST_DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'vierne
 const INCIDENT_REASONS = ['enfermedad', 'incapacidad IMSS', 'permiso personal', 'falta injustificada', 'otro', 'vacaciones'];
 
 function fmtTime(t) { return t ? String(t).slice(0, 5) : ''; }
+function fmtMoney(n) {
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(n) || 0);
+}
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function monthISO() { return new Date().toISOString().slice(0, 7); }
 
@@ -162,7 +165,7 @@ function Admin({ onBack }) {
 
   const tabs = [
     ['asistencia', 'Asistencia'], ['vacaciones', 'Vacaciones'], ['incidentes', 'Permisos y faltas'],
-    ['overtime', 'Horas extra'], ['festivos', 'Festivos'], ['empleadas', 'Empleadas'],
+    ['overtime', 'Horas extra'], ['prestamos', 'Préstamos'], ['festivos', 'Festivos'], ['empleadas', 'Empleadas'],
     ['reporte', 'Reporte'], ['ajustes', 'Ajustes'],
   ];
 
@@ -189,6 +192,7 @@ function Admin({ onBack }) {
       {tab === 'vacaciones' && <VacacionesTab state={state} refresh={refresh} />}
       {tab === 'incidentes' && <IncidentesTab state={state} refresh={refresh} />}
       {tab === 'overtime' && <OvertimeTab state={state} refresh={refresh} />}
+      {tab === 'prestamos' && <PrestamosTab state={state} refresh={refresh} />}
       {tab === 'festivos' && <FestivosTab state={state} refresh={refresh} />}
       {tab === 'empleadas' && <EmpleadasTab state={state} refresh={refresh} />}
       {tab === 'ajustes' && <AjustesTab state={state} refresh={refresh} newPin={newPin} setNewPin={setNewPin} currentPin={currentPin} setCurrentPin={setCurrentPin} />}
@@ -438,6 +442,138 @@ function OvertimeTab({ state, refresh }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function PrestamosTab({ state, refresh }) {
+  const [form, setForm] = useState({ employeeId: '', date: todayISO(), amount: '', note: '' });
+  const loans = state.loans || [];
+  const loanPayments = state.loanPayments || [];
+
+  // Resumen por empleada: total prestado, total abonado, saldo pendiente.
+  const summary = {};
+  for (const l of loans) {
+    const s = summary[l.employee_id] || { employee_name: l.employee_name, prestado: 0, abonado: 0, saldo: 0 };
+    s.prestado += l.amount;
+    s.abonado += l.total_paid;
+    s.saldo += l.balance;
+    summary[l.employee_id] = s;
+  }
+  const summaryRows = Object.values(summary).sort((a, b) => b.saldo - a.saldo);
+
+  async function create(e) {
+    e.preventDefault();
+    try {
+      await api('/api/admin/loans', { method: 'POST', body: { ...form, employeeId: parseInt(form.employeeId, 10), amount: parseFloat(form.amount) } });
+      setForm({ employeeId: '', date: todayISO(), amount: '', note: '' });
+      await refresh('Préstamo registrado.');
+    } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div>
+      <h2>Préstamos</h2>
+      <p className="muted">Solo visible en Administración. Registra el préstamo cuando una colaboradora lo pide y ve anotando los abonos que va metiendo; el saldo se calcula solo.</p>
+
+      <h3>Resumen por empleada</h3>
+      <table>
+        <thead><tr><th>Empleada</th><th>Total prestado</th><th>Total abonado</th><th>Saldo pendiente</th></tr></thead>
+        <tbody>
+          {summaryRows.map((s) => (
+            <tr key={s.employee_name}>
+              <td>{s.employee_name}</td>
+              <td>{fmtMoney(s.prestado)}</td>
+              <td>{fmtMoney(s.abonado)}</td>
+              <td><strong>{fmtMoney(s.saldo)}</strong></td>
+            </tr>
+          ))}
+          {summaryRows.length === 0 && <tr><td colSpan="4">Sin préstamos registrados.</td></tr>}
+        </tbody>
+      </table>
+
+      <h3>Nuevo préstamo</h3>
+      <form className="card" onSubmit={create}>
+        <div className="grid2">
+          <div><label>Empleada</label>
+            <select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })} required>
+              <option value="">Elige…</option>
+              {state.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select></div>
+          <div><label>Fecha del préstamo</label><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} required /></div>
+          <div><label>Monto ($)</label><input type="number" min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="Ej. 1000" required /></div>
+          <div><label>Motivo / nota (opcional)</label><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Ej. gasto personal" /></div>
+        </div>
+        <button>Registrar préstamo</button>
+      </form>
+
+      <h3>Préstamos</h3>
+      {loans.length === 0 && <p className="muted">Aún no hay préstamos.</p>}
+      {loans.map((l) => (
+        <LoanCard key={l.id} loan={l} payments={loanPayments.filter((p) => p.loan_id === l.id)} refresh={refresh} />
+      ))}
+    </div>
+  );
+}
+
+function LoanCard({ loan, payments, refresh }) {
+  const [payForm, setPayForm] = useState({ date: todayISO(), amount: '', note: '' });
+  const liquidado = loan.status === 'liquidado';
+
+  async function addPayment(e) {
+    e.preventDefault();
+    try {
+      await api(`/api/admin/loans/${loan.id}/payments`, { method: 'POST', body: { ...payForm, amount: parseFloat(payForm.amount) } });
+      setPayForm({ date: todayISO(), amount: '', note: '' });
+      await refresh('Abono registrado.');
+    } catch (err) { alert(err.message); }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <strong>{loan.employee_name}</strong> · {loan.date} · {loan.note || 'Sin motivo'}
+        </div>
+        <span className={`badge ${liquidado ? 'ok' : 'pending'}`}>{liquidado ? 'Liquidado' : 'Activo'}</span>
+      </div>
+      <p>
+        Préstamo: <strong>{fmtMoney(loan.amount)}</strong> · Abonado: {fmtMoney(loan.total_paid)} · Saldo pendiente: <strong>{fmtMoney(loan.balance)}</strong>
+      </p>
+      {payments.length > 0 && (
+        <table>
+          <thead><tr><th>Fecha abono</th><th>Monto</th><th>Nota</th><th></th></tr></thead>
+          <tbody>
+            {payments.map((p) => (
+              <tr key={p.id}>
+                <td>{p.date}</td><td>{fmtMoney(p.amount)}</td><td>{p.note || '—'}</td>
+                <td><button className="secondary small" onClick={async () => { if (confirm('¿Eliminar este abono? El saldo pendiente volverá a subir.')) { await api(`/api/admin/loan-payments/${p.id}`, { method: 'DELETE' }); await refresh('Abono eliminado.'); } }}>Eliminar</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {liquidado ? (
+        <p className="muted">Liquidado: ya no se pueden registrar abonos en este préstamo.</p>
+      ) : (
+        <form onSubmit={addPayment}>
+          <div className="grid2">
+            <div><label>Fecha del abono</label><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} required /></div>
+            <div><label>Monto del abono ($)</label><input type="number" min="0.01" step="0.01" max={loan.balance} value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} placeholder={`Máx. ${fmtMoney(loan.balance)}`} required /></div>
+          </div>
+          <label>Nota (opcional)</label>
+          <input value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })} placeholder="Ej. descuento de nómina" />
+          <div className="btnrow">
+            <button className="small">Agregar abono</button>
+            <button type="button" className="secondary small" onClick={async () => { if (confirm(`¿Eliminar el préstamo de ${fmtMoney(loan.amount)} a ${loan.employee_name} y todos sus abonos?`)) { await api(`/api/admin/loans/${loan.id}`, { method: 'DELETE' }); await refresh('Préstamo eliminado.'); } }}>Eliminar préstamo</button>
+          </div>
+        </form>
+      )}
+      {liquidado && (
+        <div className="btnrow">
+          <button type="button" className="secondary small" onClick={async () => { if (confirm(`¿Eliminar el préstamo de ${fmtMoney(loan.amount)} a ${loan.employee_name} y todos sus abonos?`)) { await api(`/api/admin/loans/${loan.id}`, { method: 'DELETE' }); await refresh('Préstamo eliminado.'); } }}>Eliminar préstamo</button>
+        </div>
+      )}
     </div>
   );
 }
