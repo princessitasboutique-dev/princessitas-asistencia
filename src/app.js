@@ -107,6 +107,16 @@ function isValidTime(v) {
 function isValidMonth(v) {
   return typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
 }
+function isValidDateStr(v) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+// pg devuelve NUMERIC como string: normaliza a número con 2 decimales.
+function money(v) {
+  const n = parseFloat(v);
+  return Number.isNaN(n) ? 0 : Math.round(n * 100) / 100;
+}
 
 function createApp(pool) {
   const app = express();
@@ -128,6 +138,37 @@ function createApp(pool) {
   const normIncident = (r) => ({ ...r, date: toISODate(r.date) });
   const normOvertime = (r) => ({ ...r, date: toISODate(r.date) });
   const normHoliday = (r) => ({ ...r, date: toISODate(r.date) });
+  const normLoan = (r, totalPaid) => {
+    const amount = money(r.amount);
+    const paid = money(totalPaid);
+    const balance = Math.round((amount - paid) * 100) / 100;
+    return {
+      ...r,
+      date: toISODate(r.date),
+      created_at: toISODateTime(r.created_at),
+      amount,
+      total_paid: paid,
+      balance,
+      status: paid >= amount ? 'liquidado' : 'activo',
+    };
+  };
+  const normLoanPayment = (r) => ({ ...r, date: toISODate(r.date), amount: money(r.amount) });
+
+  async function getLoan(id) {
+    const r = await pool.query(
+      `SELECT l.*, e.name AS employee_name FROM loans l
+       JOIN employees e ON e.id = l.employee_id WHERE l.id = $1`,
+      [id]
+    );
+    return r.rows[0] || null;
+  }
+  async function loanTotalPaid(loanId) {
+    const r = await pool.query(
+      'SELECT COALESCE(SUM(amount),0) AS total FROM loan_payments WHERE loan_id = $1',
+      [loanId]
+    );
+    return money(r.rows[0].total);
+  }
 
   async function getHolidaysSet() {
     const r = await pool.query('SELECT date FROM holidays');
@@ -348,6 +389,21 @@ function createApp(pool) {
          JOIN employees e ON e.id = o.employee_id ORDER BY o.date DESC LIMIT 300`
       );
       const holidays = await pool.query('SELECT * FROM holidays ORDER BY date');
+      const loanRows = await pool.query(
+        `SELECT l.*, e.name AS employee_name FROM loans l
+         JOIN employees e ON e.id = l.employee_id ORDER BY l.date DESC, l.id DESC`
+      );
+      const paymentRows = await pool.query(
+        `SELECT p.*, e.name AS employee_name FROM loan_payments p
+         JOIN loans l ON l.id = p.loan_id
+         JOIN employees e ON e.id = l.employee_id ORDER BY p.date DESC, p.id DESC`
+      );
+      const paidByLoan = {};
+      for (const p of paymentRows.rows) {
+        paidByLoan[p.loan_id] = (paidByLoan[p.loan_id] || 0) + money(p.amount);
+      }
+      const loans = loanRows.rows.map((l) => normLoan(l, paidByLoan[l.id] || 0));
+      const loanPayments = paymentRows.rows.map(normLoanPayment);
       // Cumpleaños próximos: hoy + próximos 3 días (con vuelta de año).
       const upcomingBirthdays = [];
       for (const e of employees) {
@@ -371,6 +427,8 @@ function createApp(pool) {
         vacations: vacs.rows.map(normVacation),
         incidents: incidents.rows.map(normIncident),
         overtime: overtimeRows.rows.map(normOvertime),
+        loans,
+        loanPayments,
         holidays: holidays.rows.map(normHoliday),
         upcomingBirthdays,
       });
@@ -609,6 +667,62 @@ function createApp(pool) {
   app.delete('/api/admin/overtime/:id', requireAdmin, async (req, res, next) => {
     try {
       await pool.query('DELETE FROM overtime WHERE id = $1', [parseInt(req.params.id, 10)]);
+      return res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
+  // ---- Préstamos ----
+  app.post('/api/admin/loans', requireAdmin, async (req, res, next) => {
+    try {
+      const b = req.body || {};
+      const employee = await getEmployee(parseInt(b.employeeId || b.employee_id, 10));
+      if (!employee) return res.status(404).json({ ok: false, error: 'Empleada no encontrada.' });
+      const date = toISODate(b.date);
+      if (!isValidDateStr(date)) return res.status(400).json({ ok: false, error: 'Fecha del préstamo inválida.' });
+      const amount = money(b.amount);
+      if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: 'El monto del préstamo debe ser mayor a 0.' });
+      const r = await pool.query(
+        'INSERT INTO loans (employee_id, date, amount, note) VALUES ($1,$2,$3,$4) RETURNING *',
+        [employee.id, date, amount, b.note || null]
+      );
+      const row = r.rows[0];
+      return res.status(201).json({ ok: true, loan: normLoan({ ...row, employee_name: employee.name }, 0) });
+    } catch (err) { next(err); }
+  });
+
+  app.delete('/api/admin/loans/:id', requireAdmin, async (req, res, next) => {
+    try {
+      await pool.query('DELETE FROM loans WHERE id = $1', [parseInt(req.params.id, 10)]);
+      return res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
+  app.post('/api/admin/loans/:id/payments', requireAdmin, async (req, res, next) => {
+    try {
+      const loanId = parseInt(req.params.id, 10);
+      const loan = await getLoan(loanId);
+      if (!loan) return res.status(404).json({ ok: false, error: 'Préstamo no encontrado.' });
+      const b = req.body || {};
+      const date = toISODate(b.date);
+      if (!isValidDateStr(date)) return res.status(400).json({ ok: false, error: 'Fecha del abono inválida.' });
+      const amount = money(b.amount);
+      if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: 'El monto del abono debe ser mayor a 0.' });
+      const paid = await loanTotalPaid(loanId);
+      const balance = Math.round((money(loan.amount) - paid) * 100) / 100;
+      if (amount > balance + 0.009) {
+        return res.status(400).json({ ok: false, error: `El abono supera el saldo pendiente de $${balance.toFixed(2)}.` });
+      }
+      const r = await pool.query(
+        'INSERT INTO loan_payments (loan_id, date, amount, note) VALUES ($1,$2,$3,$4) RETURNING *',
+        [loanId, date, amount, b.note || null]
+      );
+      return res.status(201).json({ ok: true, payment: normLoanPayment(r.rows[0]) });
+    } catch (err) { next(err); }
+  });
+
+  app.delete('/api/admin/loan-payments/:id', requireAdmin, async (req, res, next) => {
+    try {
+      await pool.query('DELETE FROM loan_payments WHERE id = $1', [parseInt(req.params.id, 10)]);
       return res.json({ ok: true });
     } catch (err) { next(err); }
   });
