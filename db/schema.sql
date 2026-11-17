@@ -77,7 +77,25 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
+CREATE TABLE IF NOT EXISTS loans (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  date DATE NOT NULL,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS loan_payments (
+  id SERIAL PRIMARY KEY,
+  loan_id INTEGER NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+  date DATE NOT NULL,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_loans_employee ON loans(employee_id);
+CREATE INDEX IF NOT EXISTS idx_loan_payments_loan ON loan_payments(loan_id);
 CREATE INDEX IF NOT EXISTS idx_attendance_employee ON attendance(employee_id);
 CREATE INDEX IF NOT EXISTS idx_vacations_employee ON vacations(employee_id);
 CREATE INDEX IF NOT EXISTS idx_incidents_employee_date ON incidents(employee_id, date);
